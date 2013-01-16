@@ -36,11 +36,13 @@ If you have improvements or bugreports, please send them to:
 
 ===
 
-For the solaris support, please get kstat & kstat_bridge from https://github.com/fcicq/kstat
+For the solaris support, please get kstat & kstat_bridge from https://github.com/fcicq/kstat first.
 
+Known Limitations:
 You have to manually specify disk / netif (like -D sd1, -N net0) in order to enable disk / net support.
-One disk / netif only, "total" is NOT supported.
+One disk / netif only, "total" is NOT supported (may add in the future).
+Only total cpu usage is accounted, currently not able to specify certain core (it is ok to add support in the future).
 Currently, only cpu, disk, net, paging, system, memory, loadavg are supported.
 
 The author's test env is an instance running on Joyent SmartMachine platform.
-Please attach related kstat report in issue if not working.
+Please attach related kstat report in issue if not working / you want to have other features implemented.
