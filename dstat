@@ -2650,6 +2650,183 @@ def perform(update):
         if not op.update:
             sys.stdout.write('\n')
 
+# solaris compatibility layer by fcicq, released under GPLv2
+# requires experimental kstat_bridge from https://github.com/fcicq/kstat
+_solaris_compatibility_enabled = True
+try:
+    from kstat_bridge import getcpunr, solaris_uptime as ticks, solaris_loadavg, solaris_mem, solaris_cpu, solaris_net, solaris_disk
+except ImportError:
+    _solaris_compatibility_enabled = False
+
+import cStringIO as StringIO
+class dstat_f(dstat):
+    def fakeopen(self):
+        self.fd = []
+        self.fd.append(StringIO.StringIO())
+
+class dstat_load_solaris(dstat_f):
+    def __init__(self):
+        self.name = 'load avg'
+        self.nick = ('1m', '5m', '15m')
+        self.vars = ('load1', 'load5', 'load15')
+        self.type = 'f'
+        self.width = 4
+        self.scale = 0.5
+        self.fakeopen()
+
+    def extract(self):
+        l = solaris_loadavg()
+        self.val['load1'] = float(l[0])
+        self.val['load5'] = float(l[1])
+        self.val['load15'] = float(l[2])
+
+class dstat_mem_solaris(dstat_f):
+    def __init__(self):
+        self.name = 'memory usage'
+        self.nick = ('used', 'cach', 'free')
+        self.vars = ('MemUsed', 'Cached', 'MemFree')
+        self.fakeopen()
+
+    def extract(self):
+        l = solaris_mem()
+        self.val['MemUsed'], self.val['Cached'], self.val['MemFree'] = l[1], l[3], l[2]
+
+class dstat_cpu24_solaris(dstat_f):
+    def __init__(self):
+        self.name = 'cpu usage'
+        self.nick = ('usr', 'sys', 'idl')
+        self.vars = ('user', 'system', 'idle')
+        self.type = 'p'
+        self.width = 3
+        self.scale = 34
+        self.fakeopen()
+
+    def extract(self):
+        l = solaris_cpu()        
+        self.set2['user'] = l[3]
+        self.set2['system'] = l[2]
+        self.set2['idle'] = l[0]
+        self.set2['total'] = l[4]
+        if not 'total' in self.set1:
+            self.val['user'] = 100.0 * self.set2['user'] / self.set2['total']
+            self.val['system'] = 100.0 * self.set2['system'] / self.set2['total']
+            self.val['idle'] = 100.0 * self.set2['idle'] / self.set2['total']
+        else:
+            dlt = self.set2['total'] - self.set1['total']
+            self.val['user'] = (self.set2['user'] - self.set1['user']) * 100.0 / dlt
+            self.val['system'] = (self.set2['system'] - self.set1['system']) * 100.0 / dlt
+            self.val['idle'] = (self.set2['idle'] - self.set1['idle']) * 100.0 / dlt
+
+        if step == op.delay:
+            self.set1.update(self.set2)
+
+class dstat_page24_solaris(dstat_f):
+    def __init__(self):
+        self.name = 'paging'
+        self.nick = ('in', 'out')
+        self.vars = ('pswpin', 'pswpout')
+        self.type = 'd'
+        self.fakeopen()
+
+    def extract(self):
+        l = solaris_cpu()
+        self.set2['pgpgin'], self.set2['pgpgout'] = l[5], l[6]
+        if elapsed > 0:
+            self.val['pswpin'] = (self.set2['pgpgin'] - self.set1['pgpgin']) * 1.0 / elapsed
+            self.val['pswpout'] = (self.set2['pgpgout'] - self.set1['pgpgout']) * 1.0 / elapsed
+        else:
+            self.val['pswpin'] = self.val['pswpout'] = 0
+
+        if step == op.delay:
+            self.set1.update(self.set2)
+
+class dstat_sys_solaris(dstat_f):
+    def __init__(self):
+        self.name = 'system'
+        self.nick = ('int', 'csw')
+        self.vars = ('intr', 'ctxt')
+        self.type = 'd'
+        self.width = 5
+        self.scale = 1000
+        self.fakeopen()
+
+    def extract(self):
+        l = solaris_cpu()
+        self.set2['int'], self.set2['csw'] = l[7], l[8]
+        if elapsed > 0:
+            self.val['intr'] = (self.set2['int'] - self.set1['int']) * 1.0 / elapsed
+            self.val['ctxt'] = (self.set2['csw'] - self.set1['csw']) * 1.0 / elapsed
+        else:
+            self.val['intr'] = self.val['ctxt'] = 0
+
+        if step == op.delay:
+            self.set1.update(self.set2)
+
+class dstat_net_solaris(dstat_f):
+    def __init__(self):
+        self.nick = ('recv', 'send')
+        self.type = 'b'
+        self.cols = 2
+        self.fakeopen()
+
+    def vars(self):
+        if not (isinstance(op.netlist, list) and len(op.netlist) == 1):
+            raise Exception, 'please use -N to specify one (and only one) network interface'
+        return [op.netlist[0]]
+
+    def name(self):
+        return ['net/'+name for name in self.vars]
+    
+    def extract(self):
+        interface = self.vars[0]
+        l = solaris_net(interface)
+        self.set2[interface] = l[2], l[3]
+        if elapsed > 0:
+            self.val[interface] = (self.set2[interface][0] - self.set1[interface][0]) * 1.0 / elapsed, \
+                (self.set2[interface][1] - self.set1[interface][1]) * 1.0 / elapsed, 
+        else:
+            self.val[interface] = [0, 0]
+                
+        if step == op.delay:
+            self.set1.update(self.set2)
+
+class dstat_disk24_old_solaris(dstat_f):
+    def __init__(self):
+        self.nick = ('read', 'writ')
+        self.type = 'b'
+        self.cols = 2
+        self.fakeopen()
+
+    def vars(self):
+        if not (isinstance(op.disklist, list) and len(op.disklist) == 1):
+            raise Exception, 'please use -D to specify one (and only one) disk (like sdX)'
+        return [op.disklist[0]]
+
+    def name(self):
+        return ['dsk/'+name for name in self.vars]
+
+    def extract(self):
+        disk = self.vars[0]
+        l = solaris_disk(disk)
+        self.set2[disk] = l[0], l[1]
+        if elapsed > 0:
+            self.val[disk] = (self.set2[disk][0] - self.set1[disk][0]) * 1.0 / elapsed, \
+                (self.set2[disk][1] - self.set1[disk][1]) * 1.0 / elapsed, 
+        else:
+            self.val[disk] = [0, 0]
+
+        if step == op.delay:
+            self.set1.update(self.set2)
+
+if _solaris_compatibility_enabled:
+    dstat_load = dstat_load_solaris
+    dstat_mem = dstat_mem_solaris
+    dstat_cpu24 = dstat_cpu24_solaris
+    dstat_page24 = dstat_page24_solaris
+    dstat_sys = dstat_sys_solaris
+    dstat_net = dstat_net_solaris
+    dstat_disk24_old = dstat_disk24_old_solaris
+
 ### Main entrance
 if __name__ == '__main__':
     try:
