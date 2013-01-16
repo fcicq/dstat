@@ -33,3 +33,10 @@ help and your feedback to fix the remaining problems.
 If you have improvements or bugreports, please send them to:
 
     <dag@wieers.com>
+
+===
+
+For the solaris support, please get kstat & kstat_bridge from https://github.com/fcicq/kstat
+
+You have to manually specify disk / netif (like -D sd1, -N net0) in order to enable disk / net support.
+Currently, only cpu, disk, net, paging, system, memory, loadavg are supported.
